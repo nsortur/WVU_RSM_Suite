@@ -16,6 +16,8 @@ import argparse
 from lhsu import lhsu
 from rotate_stl import rotate_stl
 from regression_model import regression_model
+import argparse
+import trimesh
 
 #lhsu = imp.load_source("lhsu", "./Simulation/LHS/lhsu.py")
 
@@ -25,47 +27,11 @@ def CWT(inputdir,meshdir,filename):       #Function created by Logan Sheridan at
 
 
 ####################### Analyze STL #######################
-    meshpath = os.path.join(meshdir,filename)
-    stl = open(meshpath,'r')    #Open stl file
-    data=stl.readlines()        #Read all lines of stl file
-    lst=[]                      #Create empty list so self-updating is possible
-    nfacet=0
-    for i in range(len(data)):
-        x='vertex' in data[i]   #See if the word 'vertex' exists within each line
-        if x==1:
-            lst.append(data[i]) #If so, add to the list
-            vertices=np.zeros([len(lst),3])    #Create matrix for vertices
+    meshpath = os.path.join(meshdir, filename)
+    mesh = trimesh.load(meshpath)
 
-    for i in range(len(lst)):
-        st=lst[i]
-        sta=st.strip()          #Remove all trailing spaces in line
-        sta=sta.replace('vertex','').strip()    #Remove the word 'vertex'
-        sta=np.array(sta.split())         #Split remaining string into 1x3 vector containing vertices
-        vertices[i,:]=sta                 #Add vertices to matrix
-
-    for i in range(len(data)):
-        j='endfacet' in data[i]
-        if j==1:
-            nfacet=nfacet+1         #Find the number of facets
-
-
-
-################## Check Water Tightness ##################
-
-    stl.close()
-    nvert = len(vertices) #number of vertices
-    f = np.arange(nvert).reshape((nfacet, 3)) #acts as a placeholder for faces (faster than a for loop)
-    c, ia, ic= np.unique(vertices,return_index=True,return_inverse=True, axis=0)  #find the index of the unique vertices
-    e=ic[f] #These are essentially the edges of the facet. Each should occur 3 times
-    edges = np.concatenate([e[:,[0,1]], e[:,[1,2]], e[:,[2,0]] ]) #create list of edges
-
-    #Sort edges and find unique edges and how many
-    sortedges= np.sort(edges) #sort edges
-    unqedges= np.unique(sortedges, axis=0) #number of unique edges
-
-    if len(edges) == len(unqedges)*2: #because every edge is used twice (each edge touches two triangles)
+    if mesh.is_watertight:
         print('The Mesh is Watertight! \n Continuing with TPMC...')
-
     else:
         print('The Mesh is NOT Watertight! \n Terminating program...')
         exit()
@@ -95,19 +61,18 @@ def tpm_cleanup(tpmdir):
 
 ########################### READ INPUT PARAMETERS ############################
 
-def read_input(inputdir,meshdir,compdir, D2R):
+def read_input(inputdir,meshdir,compdir, D2R, rsmname):
     #This function reads in a json file to a python dictionary.
     #Formatting for the json file is important. However, white space and input order is not important
 
 
     #Open the input file
     inputpath = os.path.join(inputdir, "Simulation.json")
-    rf=open(inputpath)
-    md=json.load(rf)
+    with open(inputpath) as rf:
+        md = json.load(rf)
 
     NENS = md['Number of Ensemble Points']
     NPROCS = md['Number of Processors to be used']
-    RSMNAME = md['Object Name']
     GSI_MODEL = md['Gas Surface Interaction Model (1=DRIA,2=CLL)']
     Rotation = md['Component Rotation (1=No,2=Yes)']
     ComponentRotation = md['Component Rotation Min/Max']
@@ -124,6 +89,7 @@ def read_input(inputdir,meshdir,compdir, D2R):
         print('Please enter valid GSI_MODEL flag in Simulation.json')
         sys.exit(1)
 
+    RSMNAME = rsmname
 
     parentpath = os.path.join(inputdir, "STL_Rotation_Inputs/parent.txt")
     parents = open(parentpath,"r")
@@ -268,19 +234,22 @@ def deflectionfile(tpmdir,inputdir,outputdir):    #function created by Logan She
 
 
 ######################## RUN TPMC ENSEMBLE #############################
-def run_tpmc(path4tpm, NPROCS, speciesnames, ispec, rtype, outdir, RSMNAME):
-
+def run_tpmc(path4tpm, NPROCS, speciesnames, ispec, rtype, outfile, RSMNAME):
     #RUN THE CODE
     print("Starting Simulation for "+speciesnames[ispec]+" "+rtype+" set\n")
     cmd = "mpiexec -n %d %s" % (NPROCS, path4tpm)
     logging.debug("Running tpm as: %s" % cmd)
     os.system(cmd)
+    # make a fake output file
+    # with open("tempfiles/Cdout.dat", "w") as f:
+    #     f.write("7.337475e+03 1.364221e+03 1.344518e+03 8.201282e-01 8.968926e-02 3.134909e+00 9.881161e-01 2.551345e+00\n" 
+    #             + "7.816881e+03 3.893836e+02 1.044514e+03 3.101161e-01 8.918926e-01 2.864616e+00 -1.496969e+00 4.034787e+00")
 
     #COPY THE OUTPUT TO A NEW FILE
     print("Copying output data\n")
-    outname = RSMNAME+"_"+speciesnames[ispec]+"_"+rtype+"_set.dat"
-    outpath = os.path.join(outdir, outname)
-    cmd = 'cp tempfiles/Cdout.dat "'+outpath+'"'
+    # outname = RSMNAME+"_"+speciesnames[ispec]+"_"+rtype+"_set.dat"
+    # outpath = os.path.join(outdir, outname)
+    cmd = 'cp tempfiles/Cdout.dat "'+outfile+'"'
     os.system(cmd)
 
     print("Copying area output data\n")
@@ -392,19 +361,29 @@ def total_areafile(RSMNAME):     #function created by Logan Sheridan at WVU
 
 ############### LOOP OVER TEST/TRAINING AND MOLE FRACTIONS ##############
 ###################### RUN ROTATION OF STL FILES ########################
-def tpmc_loop(path4tpm, NPROCS, NENS,GSI_MODEL,Rotation, xmin,xmax, regdir, tpmdir,basedir, RSMNAME):
+def tpmc_loop(path4tpm, speciesnames, NPROCS, NENS,GSI_MODEL,Rotation, xmin,xmax, regdir, tpmdir,basedir, RSMNAME, outfile):
 
     ####################### CONSTANTS #######################
     D2R = (math.pi/180.0)   #DEGREES TO RADIANS CONVERSION
-    NSPECIES = 6            #NUMBER OF SPECIES
-    speciesnames = ["O", "O2", "N", "N2", "He", "H"]
+    # NSPECIES = 6            #NUMBER OF SPECIES
+    # speciesnames = ["O", "O2", "N", "N2", "He", "H"]
+    # species = np.zeros(NSPECIES)
+
+    NSPECIES = len(speciesnames)
     species = np.zeros(NSPECIES)
+    species = [1 if "O" in speciesnames else 0,
+               1 if "O2" in speciesnames else 0,
+               1 if "N" in speciesnames else 0,
+               1 if "N2" in speciesnames else 0,
+               1 if "He" in speciesnames else 0,
+               1 if "H" in speciesnames else 0]
+    
 
     #os.chdir(tpmdir)
     if os.path.exists("tempfiles/tpm.ensemble.h5"):
         os.remove("tempfiles/tpm.ensemble.h5")
-    if os.path.exists("tempfiles/tpm.ensemble"):
-        os.remove("tempfiles/tpm.ensemble")
+    # if os.path.exists("tempfiles/tpm.ensemble"):
+    #     os.remove("tempfiles/tpm.ensemble")
     outputdir = os.path.join(basedir,"Outputs")
     #Create LHS ensemble
     lhs_ensemble(tpmdir, xmin, xmax, NENS, GSI_MODEL)
@@ -420,33 +399,26 @@ def tpmc_loop(path4tpm, NPROCS, NENS,GSI_MODEL,Rotation, xmin,xmax, regdir, tpmd
     if os.path.exists("tpm.ensemble.h5"):
         os.remove("tpm.ensemble.h5")
 
-    for idx in range(2):  #Loop over to create test then training data
-        for ispec in range(NSPECIES):   # Loop over each species of mole fraction for tpmc
-            #Define training and test sets
-            if idx == 0:
-                rtype = "training"
-                outdir = os.path.join(outputdir, "RSM_Regression_Models/data/Training Set/")
+    # for idx in range(2):  #Loop over to create test then training data
+    for ispec in range(NSPECIES):   # Loop over each species of mole fraction for tpmc
+        rtype = "training"
+        # outdir = os.path.join(outputdir, "RSM_Regression_Models/data/Training Set/")
 
-            if idx ==1 :
-                rtype = "test"
-                outdir = os.path.join(outputdir, "RSM_Regression_Models/data/Test Set/")
+        # #Create directory if it doesn't exist
+        # if not os.path.exists(outdir):
+        #         os.makedirs(outdir)
 
-            #Create directory if it doesn't exist
-            if not os.path.exists(outdir):
-                    os.makedirs(outdir)
+        #Define Species Array
+        # for i in range(NSPECIES):
+        #     species[i] = 0.0
+        #     if i == ispec:
+        #         species[i] = 1.0
 
-            #Define Species Array
-            for i in range(NSPECIES):
-                species[i] = 0.0
-                if i == ispec:
-                    species[i] = 1.0
+        #Modify Species Mole Fraction for tpmc simulation
+        modify_input(RSMNAME,GSI_MODEL,Rotation, tpmdir, species, D2R)
 
-
-            #Modify Species Mole Fraction for tpmc simulation
-            modify_input(RSMNAME,GSI_MODEL,Rotation, tpmdir, species, D2R)
-
-            #Run TPMC code
-            run_tpmc(path4tpm, NPROCS, speciesnames, ispec, rtype, outdir, RSMNAME)
+        #Run TPMC code
+        run_tpmc(path4tpm, NPROCS, speciesnames, ispec, rtype, outfile, RSMNAME)
 
 #If rotation is being performed, then the test and training data needs to include all componente rotation values
     if Rotation ==2:
@@ -487,6 +459,9 @@ def logo():
 
 
 if __name__ == '__main__':
+    
+    def list_of_strings(arg):
+        return arg.split(',')
 
     logging.basicConfig(level=logging.DEBUG)
     logo()
@@ -496,6 +471,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Response Surface Model')
     parser.add_argument('--tpm', metavar='PATH', type=str,
                             help='Path for executable tpm')
+    parser.add_argument('--input', type=str, required=True, help='Object Name')
+    parser.add_argument('--output', type=str, required=True, help='Output file')
+    parser.add_argument('--species', type=list_of_strings,
+                        help='Species names seperated by comma', 
+                        default=["O", "O2", "N", "N2", "He", "H"])
 
     args = parser.parse_args()
 
@@ -503,8 +483,8 @@ if __name__ == '__main__':
         parser.print_help()
         sys.exit(1)
 
-    if not os.path.isfile(args.tpm):
-        raise ValueError("Could not find %s", args.tpm)
+    # if not os.path.isfile(args.tpm):
+        # raise ValueError("Could not find %s", args.tpm)
 
     #################### Directories ########################
     print("Checking folders...")
@@ -534,7 +514,10 @@ if __name__ == '__main__':
 
     ####################### INPUTS ##########################
     print("Reading input files...")
-    xmin, xmax, GSI_MODEL, NENS, NPROCS, RSMNAME, Rotation = read_input(inputdir,meshdir,compdir, D2R)
+    rsm_name = os.path.basename(args.input)
+
+    xmin, xmax, GSI_MODEL, NENS, NPROCS, RSMNAME, Rotation = read_input(inputdir,meshdir,compdir, D2R, rsm_name)
+    outfile = args.output
 
     ################### START CODE ########################
 
@@ -546,11 +529,11 @@ if __name__ == '__main__':
 
     #Run TPMC test and training sets -> Includes reading input, and rotating stl files
     print("TPMC test and training sets...")
-    tpmc_loop(args.tpm,NPROCS, NENS,GSI_MODEL,Rotation,xmin,xmax, regdir, tpmdir,basedir, RSMNAME)
+    tpmc_loop(args.tpm, args.species, NPROCS, NENS,GSI_MODEL,Rotation,xmin,xmax, regdir, tpmdir,basedir, RSMNAME, outfile)
 
     #Run Regression to fit data
-    print("Regression...")
-    run_reg(basedir)
+    # print("Regression...")
+    # run_reg(basedir)
 
     #Clean up TPMC diagnostic files
     tpm_cleanup(tpmdir)

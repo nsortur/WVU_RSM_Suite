@@ -1,3 +1,8 @@
+tempfiles/
+*.pt
+data/
+*.dat
+
 # Prerequisites
 *.d
 
