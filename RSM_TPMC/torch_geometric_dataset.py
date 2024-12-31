@@ -25,8 +25,11 @@ def save_graph_as_stl(graph, file_path):
     mesh = trimesh.Trimesh(vertices=graph.pos.numpy(), faces=graph.face.T.numpy())
     mesh.fill_holes()
 
-    # Export to STL file
-    mesh.export(file_path)
+    ascii_stl = trimesh.exchange.stl.export_stl_ascii(mesh)
+
+    # Write the ASCII STL string to a file
+    with open(file_path, 'w') as file:
+        file.write(ascii_stl)
 
 
 def calculate_drag_samples(graph, output_dir):
@@ -37,7 +40,7 @@ def calculate_drag_samples(graph, output_dir):
     # 2) Run RSM+TPM
     result_file = os.path.join(output_dir, f"graph_{graph.index}_results.dat")
     subprocess.run([
-        "python", "RSM_TPMC/rsm_run_script.py",
+        "python", "RSM_TPMC/rsm_run_script_new.py",
         "--tpm", "RSM_TPMC/tpm/build/src/tpm",
         "--input", stl_file_path,
         "--output", result_file
@@ -77,6 +80,9 @@ if __name__ == "__main__":
             print(f"Graph {i} processed. Total samples: {len(new_dataset)}")
         except Exception as e:
             print(f"Error processing graph {i}: {e}")
+
+        if i == 10:
+            break
 
     torch.save(new_dataset, "geometric_shapes_with_drag.pt")
     print("Dataset with drag samples saved as 'geometric_shapes_with_drag.pt'")
